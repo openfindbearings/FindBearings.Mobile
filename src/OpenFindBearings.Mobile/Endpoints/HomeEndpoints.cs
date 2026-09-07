@@ -57,8 +57,10 @@ public static class HomeEndpoints
     public record MerchantDto(
         Guid Id,
         string Name,
-        string? Description,
-        bool IsVerified);
+        string? CompanyName,
+        bool IsVerified,
+        int? ProductCount,
+        string? LogoUrl);
 
     public record BrandDto(Guid Id, string Name, string? Country);
 

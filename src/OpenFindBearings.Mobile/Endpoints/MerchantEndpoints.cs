@@ -102,12 +102,15 @@ public static class MerchantEndpoints
     // ============ DTO ============
 
     public record MerchantItem(
-        Guid Id, string Name, string? Description,
-        bool IsVerified, string? Status, int? BearingCount);
+        Guid Id, string Name, string? CompanyName, string? Type,
+        bool IsVerified, string? Status, int? ProductCount, string? LogoUrl);
 
+    // 对齐 API MerchantDto 字段（补 LogoUrl/ContactPerson/Mobile/Email/Address/Grade/FollowerCount/ProductCount）
     public record MerchantDetail(
-        Guid Id, string Name, string? Contact, string? Phone,
-        string? Description, bool IsVerified, string? Status);
+        Guid Id, string Name, string? CompanyName, string? Type,
+        string? ContactPerson, string? Phone, string? Mobile, string? Email, string? Address,
+        bool IsVerified, string? Status, string? Grade,
+        int FollowerCount, int ProductCount, string? LogoUrl);
 
     public record MerchantBearingItem(
         Guid BearingId, string BearingPartNumber, string? OldNumber,
