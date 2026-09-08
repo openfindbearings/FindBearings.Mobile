@@ -15,7 +15,7 @@ public static class ProfileEndpoints
         /// <summary>
         /// 获取用户资料（聚合 Identity + API）
         /// </summary>
-        group.MapGet("/", async (
+        group.MapGet("/profile", async (
             HttpContext http,
             AuthClient authClient,
             ApiClient api,
@@ -61,7 +61,7 @@ public static class ProfileEndpoints
         /// <summary>
         /// 我的关注商家
         /// </summary>
-        group.MapGet("/follows", async (
+        group.MapGet("/followed", async (
             HttpContext http,
             ApiClient api,
             [AsParameters] PageQuery query,
