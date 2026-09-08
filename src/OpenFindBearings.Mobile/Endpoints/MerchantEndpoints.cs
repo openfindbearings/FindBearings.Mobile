@@ -87,6 +87,9 @@ public static class MerchantEndpoints
     {
         public string? Keyword { get; set; }
         public bool? VerifiedOnly { get; set; }
+        // 改动说明：新增排序透传（name/productcount），与 API 商家搜索对齐
+        public string? SortBy { get; set; }
+        public string? SortOrder { get; set; }
         public int Page { get; set; } = 1;
         public int PageSize { get; set; } = 20;
     }
@@ -125,6 +128,8 @@ public static class MerchantEndpoints
         var parts = new List<string>();
         if (!string.IsNullOrEmpty(p.Keyword)) parts.Add($"keyword={Uri.EscapeDataString(p.Keyword)}");
         if (p.VerifiedOnly.HasValue) parts.Add($"verifiedOnly={p.VerifiedOnly.Value.ToString().ToLower()}");
+        if (!string.IsNullOrEmpty(p.SortBy)) parts.Add($"sortBy={Uri.EscapeDataString(p.SortBy)}");
+        if (!string.IsNullOrEmpty(p.SortOrder)) parts.Add($"sortOrder={Uri.EscapeDataString(p.SortOrder)}");
         parts.Add($"page={p.Page}");
         parts.Add($"pageSize={p.PageSize}");
         return path + "?" + string.Join("&", parts);
