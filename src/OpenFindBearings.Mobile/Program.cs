@@ -78,12 +78,16 @@ app.MapHealthChecks("/health/live");
 app.MapHealthChecks("/health/ready");
 
 // ============ API 端点（统一前缀 /mobile） ============
-
+// 改动说明：原实现把 bearings/merchants 都直接挂在 /mobile 组下，
+// 导致两者都注册 /mobile/search、/mobile/{id}（路由冲突），且与前端约定的
+// /mobile/bearings/*、/mobile/merchants/* 命名空间不符（前端请求 404）。
+// 现按资源加子组：/mobile/bearings、/mobile/merchants、/mobile/auth，
+// 既消除歧义又对齐 Taro config.ts 的路径契约。home/profile 保持在 /mobile 根。
 var mobile = app.MapGroup("/mobile");
 mobile.MapHomeEndpoints();
-mobile.MapBearingEndpoints();
-mobile.MapMerchantEndpoints();
+mobile.MapGroup("/bearings").MapBearingEndpoints();
+mobile.MapGroup("/merchants").MapMerchantEndpoints();
 mobile.MapProfileEndpoints();
-mobile.MapAuthEndpoints();
+mobile.MapGroup("/auth").MapAuthEndpoints();
 
 app.Run();
