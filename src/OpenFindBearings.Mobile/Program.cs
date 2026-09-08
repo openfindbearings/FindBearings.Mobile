@@ -13,6 +13,11 @@ builder.Services.AddHttpClient("Api", client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["Api:BaseUrl"]!);
     client.DefaultRequestHeaders.Accept.Add(new("application/json"));
+    // 改动说明：BFF→API 为内网服务间调用，附带内部令牌头，供 API 限流中间件识别并豁免按 IP 的用户级限流，
+    // 避免所有 App 流量经此单一 Pod IP 转发时触发 guest 限流（429）。令牌取自配置 Internal:ApiToken，须与 API 侧一致。
+    var internalToken = builder.Configuration["Internal:ApiToken"];
+    if (!string.IsNullOrEmpty(internalToken))
+        client.DefaultRequestHeaders.Add("X-Internal-Token", internalToken);
 });
 
 // HttpClient：调用 Identity
