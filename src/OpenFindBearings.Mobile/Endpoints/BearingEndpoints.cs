@@ -82,6 +82,17 @@ public static class BearingEndpoints
         public string? Keyword { get; set; }
         public string? BrandName { get; set; }
         public string? BearingType { get; set; }
+        // 改动说明：新增按 ID 的品牌/类型筛选 + 排序 + 尺寸范围，透传给 API（API 早已支持，此前 BFF 未转发）。
+        public Guid? BrandId { get; set; }
+        public Guid? BearingTypeId { get; set; }
+        public string? SortBy { get; set; }
+        public string? SortOrder { get; set; }
+        public decimal? MinInnerDiameter { get; set; }
+        public decimal? MaxInnerDiameter { get; set; }
+        public decimal? MinOuterDiameter { get; set; }
+        public decimal? MaxOuterDiameter { get; set; }
+        public decimal? MinWidth { get; set; }
+        public decimal? MaxWidth { get; set; }
         public int Page { get; set; } = 1;
         public int PageSize { get; set; } = 20;
     }
@@ -120,6 +131,17 @@ public static class BearingEndpoints
         if (!string.IsNullOrEmpty(p.Keyword)) parts.Add($"keyword={Uri.EscapeDataString(p.Keyword)}");
         if (!string.IsNullOrEmpty(p.BrandName)) parts.Add($"brandName={Uri.EscapeDataString(p.BrandName)}");
         if (!string.IsNullOrEmpty(p.BearingType)) parts.Add($"bearingType={Uri.EscapeDataString(p.BearingType)}");
+        // 改动说明：品牌/类型按 ID 筛选（API 用 BrandId/BearingTypeId），排序与尺寸范围一并透传
+        if (p.BrandId.HasValue) parts.Add($"brandId={p.BrandId.Value}");
+        if (p.BearingTypeId.HasValue) parts.Add($"bearingTypeId={p.BearingTypeId.Value}");
+        if (!string.IsNullOrEmpty(p.SortBy)) parts.Add($"sortBy={Uri.EscapeDataString(p.SortBy)}");
+        if (!string.IsNullOrEmpty(p.SortOrder)) parts.Add($"sortOrder={Uri.EscapeDataString(p.SortOrder)}");
+        if (p.MinInnerDiameter.HasValue) parts.Add($"minInnerDiameter={p.MinInnerDiameter.Value}");
+        if (p.MaxInnerDiameter.HasValue) parts.Add($"maxInnerDiameter={p.MaxInnerDiameter.Value}");
+        if (p.MinOuterDiameter.HasValue) parts.Add($"minOuterDiameter={p.MinOuterDiameter.Value}");
+        if (p.MaxOuterDiameter.HasValue) parts.Add($"maxOuterDiameter={p.MaxOuterDiameter.Value}");
+        if (p.MinWidth.HasValue) parts.Add($"minWidth={p.MinWidth.Value}");
+        if (p.MaxWidth.HasValue) parts.Add($"maxWidth={p.MaxWidth.Value}");
         parts.Add($"page={p.Page}");
         parts.Add($"pageSize={p.PageSize}");
         return path + "?" + string.Join("&", parts);
