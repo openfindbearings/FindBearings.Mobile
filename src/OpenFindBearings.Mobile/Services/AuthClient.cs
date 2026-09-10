@@ -23,8 +23,12 @@ public class AuthClient
     private string ClientId => _configuration["Identity:ClientId"] ?? "mobile-client";
     /// <summary>租户标识，Identity 的 TenantContextMiddleware 从 token 请求表单体读取 realm</summary>
     private string Realm => _configuration["Identity:Realm"] ?? "openfindbearings";
-    /// <summary>请求的 scope，api:mobile 映射到资源 openfindbearings-api，使签发令牌带正确 aud</summary>
-    private string Scope => _configuration["Identity:Scope"] ?? "api:mobile";
+    /// <summary>
+    /// 请求的 scope，api:mobile 映射到资源 openfindbearings-api，使签发令牌带正确 aud。
+    /// 改动说明：追加 offline_access——OpenIddict 仅在请求含该 scope 且客户端有 scp:offline_access
+    /// 权限时才签发 refresh_token，缺失导致移动端登录响应无 refresh、冷启动登录态丢失。
+    /// </summary>
+    private string Scope => _configuration["Identity:Scope"] ?? "api:mobile offline_access";
 
     public AuthClient(
         IHttpClientFactory httpClientFactory,

@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using OpenFindBearings.Mobile.Services;
 
 namespace OpenFindBearings.Mobile.Endpoints;
@@ -20,6 +21,10 @@ public static class AuthEndpoints
             AuthClient authClient,
             CancellationToken ct) =>
         {
+            // 改动说明：移动端账号即手机号，BFF 层强制格式校验（防任意字符串经 Identity signup
+            // 的"用户名分支"注册出无手机号的账号，也防对任意号段刷码）
+            if (!IsChineseMobile(body.Phone)) return PhoneInvalid();
+
             var signUp = await authClient.SignUpAsync(body.Phone, body.Password, body.AgreeTerms, ct);
             if (!signUp.Success)
             {
@@ -41,6 +46,8 @@ public static class AuthEndpoints
             AuthClient authClient,
             CancellationToken ct) =>
         {
+            if (!IsChineseMobile(body.Username)) return PhoneInvalid();
+
             var result = await authClient.LoginAsync(body.Username, body.Password, body.DeviceId, ct);
             return result.Success ? Success(result.Token!) : MapFailure(result, "INVALID_CREDENTIALS");
         })
@@ -56,6 +63,8 @@ public static class AuthEndpoints
             AuthClient authClient,
             CancellationToken ct) =>
         {
+            if (!IsChineseMobile(body.Phone)) return PhoneInvalid();
+
             var result = await authClient.LoginWithSmsAsync(body.Phone, body.Code, body.DeviceId, ct);
             return result.Success ? Success(result.Token!) : MapFailure(result, "SMS_INVALID");
         })
@@ -71,6 +80,8 @@ public static class AuthEndpoints
             AuthClient authClient,
             CancellationToken ct) =>
         {
+            if (!IsChineseMobile(body.Phone)) return PhoneInvalid();
+
             var ok = await authClient.SendSmsCodeAsync(body.Phone, ct);
             return ok
                 ? Results.Ok(new { success = true, message = "验证码已发送" })
@@ -114,6 +125,17 @@ public static class AuthEndpoints
         .WithSummary("登出（吊销刷新令牌）")
         .AllowAnonymous();
     }
+
+    /// <summary>
+    /// 中国大陆手机号格式校验：11 位、1 开头、第二位 3-9。
+    /// 移动端以手机号为唯一账号，注册/登录/验证码入口统一在 BFF 层强制。
+    /// </summary>
+    private static bool IsChineseMobile(string? phone) =>
+        !string.IsNullOrEmpty(phone) && Regex.IsMatch(phone, @"^1[3-9]\d{9}$");
+
+    /// <summary>手机号格式不合法的统一失败响应（400 + PHONE_INVALID，移动端直接展示 message）</summary>
+    private static IResult PhoneInvalid() =>
+        Results.Json(new { success = false, code = "PHONE_INVALID", message = "手机号格式不正确" }, statusCode: 400);
 
     /// <summary>构造成功响应（扁平结构，供移动端 request.ts 直接读 accessToken）</summary>
     private static IResult Success(AuthClient.TokenResult token) => Results.Ok(new
