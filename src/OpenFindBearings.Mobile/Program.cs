@@ -1,6 +1,8 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
 using OpenFindBearings.Mobile.Endpoints;
 using OpenFindBearings.Mobile.Services;
 
@@ -33,22 +35,47 @@ builder.Services.AddScoped<AuthClient>();
 
 // JWT 认证（可选，仅需登录的端点使用）
 var identityAuthority = builder.Configuration["Identity:Authority"];
-var apiAudience = builder.Configuration["Identity:Audience"];
+// 改动说明：校验受众应为资源名 openfindbearings-api（api:mobile scope 签发令牌的 aud），
+// 此前误用 api:mobile 导致带用户令牌访问 profile 端点恒 401；加代码默认值防部署配置缺项。
+var apiAudience = builder.Configuration["Identity:Audience"] ?? "openfindbearings-api";
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.Authority = identityAuthority;
-        options.Audience = apiAudience;
         options.RequireHttpsMetadata = false; // K8s 内部 HTTP
         options.TokenValidationParameters = new()
         {
             ValidateIssuer = true,
             ValidateAudience = true,
+            ValidAudience = apiAudience,
             ValidateLifetime = true,
         };
     });
 builder.Services.AddAuthorization();
+
+// 认证端点限流（单副本 → 内存版分区限流即可，无需 Redis）
+// 改动说明：BFF 是手机号+密码/验证码的唯一直面者且公网可达，此前无任何限流，
+// 可被暴力破解。按来源 IP 对 /mobile/auth/* 固定窗口限流；被拒返回 429。
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (ctx, ct) =>
+    {
+        ctx.HttpContext.Response.ContentType = "application/json";
+        await ctx.HttpContext.Response.WriteAsJsonAsync(
+            new { success = false, code = "RATE_LIMITED", message = "操作过于频繁，请稍后再试" }, ct);
+    };
+    options.AddPolicy("auth", http =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+});
 
 // 健康检查
 builder.Services.AddHealthChecks();
@@ -74,6 +101,8 @@ var app = builder.Build();
 
 app.UseCors("AllowTaro");
 
+app.UseRateLimiter();
+
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -93,6 +122,9 @@ mobile.MapHomeEndpoints();
 mobile.MapGroup("/bearings").MapBearingEndpoints();
 mobile.MapGroup("/merchants").MapMerchantEndpoints();
 mobile.MapProfileEndpoints();
-mobile.MapGroup("/auth").MapAuthEndpoints();
+// 认证组附加 IP 限流策略（防暴力破解登录/注册/刷新）
+var authGroup = mobile.MapGroup("/auth");
+authGroup.MapAuthEndpoints();
+authGroup.RequireRateLimiting("auth");
 
 app.Run();

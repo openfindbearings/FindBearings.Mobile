@@ -4,8 +4,10 @@ using System.Text.Json;
 namespace OpenFindBearings.Mobile.Services;
 
 /// <summary>
-/// 调用 Identity 认证服务的 HTTP 客户端封装
-/// 处理登录、刷新令牌、发送验证码等
+/// 调用 Identity 认证服务的 HTTP 客户端封装。
+/// 处理注册、密码/短信登录、刷新令牌、发送验证码；
+/// 统一附加 OAuth 公共参数（client_id/realm/scope），并把 Identity 的失败响应解析为结构化结果，
+/// 不再简单吞成 null，便于端点层映射明确错误码给移动端。
 /// </summary>
 public class AuthClient
 {
@@ -16,6 +18,13 @@ public class AuthClient
     {
         PropertyNameCaseInsensitive = true
     };
+
+    /// <summary>mobile-client 为公开客户端（无 secret），仅需 client_id 自报</summary>
+    private string ClientId => _configuration["Identity:ClientId"] ?? "mobile-client";
+    /// <summary>租户标识，Identity 的 TenantContextMiddleware 从 token 请求表单体读取 realm</summary>
+    private string Realm => _configuration["Identity:Realm"] ?? "openfindbearings";
+    /// <summary>请求的 scope，api:mobile 映射到资源 openfindbearings-api，使签发令牌带正确 aud</summary>
+    private string Scope => _configuration["Identity:Scope"] ?? "api:mobile";
 
     public AuthClient(
         IHttpClientFactory httpClientFactory,
@@ -28,96 +37,152 @@ public class AuthClient
     }
 
     /// <summary>
-    /// 密码登录
+    /// 注册：调用 Identity 的匿名 signup 端点创建 OIDC 用户。
+    /// signup 只返回 UserResponse（不含令牌），令牌需随后由 password grant 换取。
     /// </summary>
-    public async Task<TokenResult?> LoginAsync(string username, string password, string deviceId, CancellationToken ct = default)
+    public async Task<AuthResult> SignUpAsync(string phone, string password, bool agreeTerms, CancellationToken ct = default)
     {
         try
         {
             var client = _httpClientFactory.CreateClient("Identity");
-            // 改动说明：maui-client 统一重命名为 mobile-client，与 Identity SeedData 和 K8s 配置保持一致
-            var clientId = _configuration["Identity:ClientId"] ?? "mobile-client";
-            var clientSecret = _configuration["Identity:ClientSecret"] ?? "mobile-secret";
-
-            var response = await client.PostAsync("/connect/token", new FormUrlEncodedContent(new Dictionary<string, string>
+            // signup 契约：account 作为用户名（此处为手机号）、confirmPassword 必填、realm 必填、agreeTerms 必须为 true
+            var payload = new
             {
-                ["grant_type"] = "password",
-                ["username"] = username,
-                ["password"] = password,
-                ["device_id"] = deviceId,
-            }), ct);
-
-            if (!response.IsSuccessStatusCode)
+                account = phone,
+                password,
+                confirmPassword = password,
+                agreeTerms,
+                realm = Realm
+            };
+            var response = await client.PostAsJsonAsync("/api/account/signup", payload, ct);
+            var body = await response.Content.ReadAsStringAsync(ct);
+            if (response.IsSuccessStatusCode)
             {
-                var error = await response.Content.ReadAsStringAsync(ct);
-                _logger.LogWarning("登录失败: {Error}", error);
-                return null;
+                return AuthResult.SignUpSuccess();
+            }
+            // 409 视为账号已存在，其余映射为注册失败，均由端点层转成错误码
+            var error = (int)response.StatusCode switch
+            {
+                409 => "USER_EXISTS",
+                400 => "REGISTER_INVALID",
+                _ => "UPSTREAM_ERROR"
+            };
+            _logger.LogWarning("注册失败: status={Status} body={Body}", (int)response.StatusCode, body);
+            return AuthResult.Failure(error, ExtractMessage(body), (int)response.StatusCode);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "注册请求异常");
+            return AuthResult.Failure("UPSTREAM_ERROR", null, 0);
+        }
+    }
+
+    /// <summary>
+    /// 密码登录（grant_type=password）。携带 device_id 供 Identity 做设备绑定。
+    /// </summary>
+    public Task<AuthResult> LoginAsync(string username, string password, string deviceId, CancellationToken ct = default)
+    {
+        return RequestTokenAsync(new Dictionary<string, string>
+        {
+            ["grant_type"] = "password",
+            ["username"] = username,
+            ["password"] = password,
+            ["device_id"] = deviceId,
+        }, "登录", ct);
+    }
+
+    /// <summary>
+    /// 短信验证码登录/注册（grant_type=sms）。
+    /// 改动说明：参数名由 username/sms_code 修正为 phone/code，与 Identity HandleSmsAsync 的
+    /// GetParameter("phone")/GetParameter("code") 对齐，否则取不到值恒判失败。
+    /// </summary>
+    public Task<AuthResult> LoginWithSmsAsync(string phone, string code, string deviceId, CancellationToken ct = default)
+    {
+        return RequestTokenAsync(new Dictionary<string, string>
+        {
+            ["grant_type"] = "sms",
+            ["phone"] = phone,
+            ["code"] = code,
+            ["device_id"] = deviceId,
+        }, "短信登录", ct);
+    }
+
+    /// <summary>
+    /// 刷新令牌（grant_type=refresh_token）。携带 device_id 与原始签发值比对。
+    /// </summary>
+    public Task<AuthResult> RefreshAsync(string refreshToken, string deviceId, CancellationToken ct = default)
+    {
+        return RequestTokenAsync(new Dictionary<string, string>
+        {
+            ["grant_type"] = "refresh_token",
+            ["refresh_token"] = refreshToken,
+            ["device_id"] = deviceId,
+        }, "刷新令牌", ct);
+    }
+
+    /// <summary>
+    /// 统一构造 /connect/token 请求：附加 client_id/realm/scope 公共参数并解析成功/失败响应。
+    /// 改动说明：原实现漏发 client_id/realm/scope，mobile-client 为公开客户端必须自报 client_id，
+    /// 且 password/sms handler 会做租户校验（缺 realm 直接拒绝）、令牌需 scope 才有正确 aud。
+    /// </summary>
+    private async Task<AuthResult> RequestTokenAsync(Dictionary<string, string> form, string scene, CancellationToken ct)
+    {
+        try
+        {
+            form["client_id"] = ClientId;
+            form["realm"] = Realm;
+            form["scope"] = Scope;
+
+            var client = _httpClientFactory.CreateClient("Identity");
+            var response = await client.PostAsync("/connect/token", new FormUrlEncodedContent(form), ct);
+            var body = await response.Content.ReadAsStringAsync(ct);
+
+            if (response.IsSuccessStatusCode)
+            {
+                var token = await JsonSerializer.DeserializeAsync<TokenResult>(
+                    new MemoryStream(System.Text.Encoding.UTF8.GetBytes(body)), JsonOptions, ct);
+                return token is not null ? AuthResult.Ok(token) : AuthResult.Failure("UPSTREAM_ERROR", null, 502);
             }
 
-            return await response.Content.ReadFromJsonAsync<TokenResult>(JsonOptions, ct);
+            // OpenIddict 失败响应形如 {error, error_description}
+            var (error, errorDescription) = ParseOAuthError(body);
+            _logger.LogWarning("{Scene}失败: {Error} {Desc}", scene, error, errorDescription);
+            return AuthResult.Failure(error, errorDescription, (int)response.StatusCode);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "登录请求异常");
-            return null;
+            _logger.LogError(ex, "{Scene}请求异常", scene);
+            return AuthResult.Failure("UPSTREAM_ERROR", null, 0);
         }
     }
 
     /// <summary>
-    /// 短信验证码登录/注册
+    /// 吊销刷新令牌（登出用）：调用 OpenIddict 的 /connect/revocation 作废 refresh_token，
+    /// 使该设备后续无法再静默续期。公开客户端需自报 client_id；mobile-client 已具 Revocation 端点权限。
     /// </summary>
-    public async Task<TokenResult?> LoginWithSmsAsync(string phone, string code, string deviceId, CancellationToken ct = default)
+    public async Task<bool> RevokeRefreshTokenAsync(string refreshToken, CancellationToken ct = default)
     {
         try
         {
             var client = _httpClientFactory.CreateClient("Identity");
-
-            var response = await client.PostAsync("/connect/token", new FormUrlEncodedContent(new Dictionary<string, string>
+            var response = await client.PostAsync("/connect/revocation", new FormUrlEncodedContent(new Dictionary<string, string>
             {
-                ["grant_type"] = "sms",
-                ["username"] = phone,
-                ["sms_code"] = code,
-                ["device_id"] = deviceId,
+                ["token"] = refreshToken,
+                ["token_type_hint"] = "refresh_token",
+                ["client_id"] = ClientId,
             }), ct);
-
-            if (!response.IsSuccessStatusCode) return null;
-            return await response.Content.ReadFromJsonAsync<TokenResult>(JsonOptions, ct);
+            return response.IsSuccessStatusCode;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "短信登录请求异常");
-            return null;
+            // 吊销失败不阻断登出（本地令牌仍会清除）；仅记日志
+            _logger.LogWarning(ex, "吊销刷新令牌失败");
+            return false;
         }
     }
 
     /// <summary>
-    /// 刷新令牌
-    /// </summary>
-    public async Task<TokenResult?> RefreshAsync(string refreshToken, string deviceId, CancellationToken ct = default)
-    {
-        try
-        {
-            var client = _httpClientFactory.CreateClient("Identity");
-
-            var response = await client.PostAsync("/connect/token", new FormUrlEncodedContent(new Dictionary<string, string>
-            {
-                ["grant_type"] = "refresh_token",
-                ["refresh_token"] = refreshToken,
-                ["device_id"] = deviceId,
-            }), ct);
-
-            if (!response.IsSuccessStatusCode) return null;
-            return await response.Content.ReadFromJsonAsync<TokenResult>(JsonOptions, ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "刷新令牌请求异常");
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// 发送短信验证码
+    /// 发送短信验证码（P2 使用，接口先保留）。
     /// </summary>
     public async Task<bool> SendSmsCodeAsync(string phone, CancellationToken ct = default)
     {
@@ -135,7 +200,7 @@ public class AuthClient
     }
 
     /// <summary>
-    /// 获取用户信息
+    /// 获取用户信息（供 profile 代理使用）。
     /// </summary>
     public async Task<UserInfo?> GetUserInfoAsync(string accessToken, CancellationToken ct = default)
     {
@@ -154,17 +219,47 @@ public class AuthClient
         }
     }
 
+    /// <summary>解析 OpenIddict 的 {error, error_description} 失败响应</summary>
+    private static (string error, string? description) ParseOAuthError(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            var error = root.TryGetProperty("error", out var e) ? e.GetString() ?? "unknown" : "unknown";
+            var desc = root.TryGetProperty("error_description", out var d) ? d.GetString() : null;
+            return (error, desc);
+        }
+        catch
+        {
+            return ("unknown", null);
+        }
+    }
+
+    /// <summary>从 Identity ApiResponse 失败体里尽力提取 message</summary>
+    private static string? ExtractMessage(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String)
+                return m.GetString();
+        }
+        catch { /* 非 JSON 忽略 */ }
+        return null;
+    }
+
     /// <summary>
-    /// 令牌响应结构
+    /// 令牌响应结构（OpenIddict 返回 snake_case，靠大小写不敏感反序列化映射）。
     /// </summary>
     public record TokenResult(
         string Access_Token,
-        string Refresh_Token,
+        string? Refresh_Token,
         int Expires_In,
-        string Token_Type);
+        string? Token_Type);
 
     /// <summary>
-    /// 用户信息结构
+    /// 用户信息结构。
     /// </summary>
     public record UserInfo(
         string? Id,
@@ -173,4 +268,36 @@ public class AuthClient
         bool IsActive,
         string? CreatedAt,
         string? LastLoginAt);
+}
+
+/// <summary>
+/// 认证调用统一结果：成功携带令牌（或仅注册成功标记），失败携带错误码/描述/上游状态码，
+/// 供端点层映射为明确的移动端错误码，避免把不同失败原因一律吞成 null。
+/// </summary>
+public sealed record AuthResult
+{
+    public bool Success { get; }
+    public AuthClient.TokenResult? Token { get; }
+    public string? Error { get; }
+    public string? ErrorDescription { get; }
+    public int StatusCode { get; }
+
+    private AuthResult(bool success, AuthClient.TokenResult? token, string? error, string? description, int statusCode)
+    {
+        Success = success;
+        Token = token;
+        Error = error;
+        ErrorDescription = description;
+        StatusCode = statusCode;
+    }
+
+    /// <summary>令牌换取成功</summary>
+    public static AuthResult Ok(AuthClient.TokenResult token) => new(true, token, null, null, 200);
+
+    /// <summary>注册成功（无令牌）</summary>
+    public static AuthResult SignUpSuccess() => new(true, null, null, null, 200);
+
+    /// <summary>失败</summary>
+    public static AuthResult Failure(string error, string? description, int statusCode)
+        => new(false, null, error, description, statusCode);
 }
