@@ -51,7 +51,9 @@ public static class ProfileEndpoints
             CancellationToken ct) =>
         {
             var accessToken = GetAccessToken(http);
-            var path = $"/api/favorites/bearings?page={query.Page}&pageSize={query.PageSize}";
+            // 改动说明：API 实际路由为 /api/me/favorites/bearings（用户自有资源组 /api/me），
+            // 原 /api/favorites/bearings 不存在会恒 404→空数据，补 /me 前缀。
+            var path = $"/api/me/favorites/bearings?page={query.Page}&pageSize={query.PageSize}";
             var result = await api.GetPagedAsync<FavoriteBearing>(path, accessToken, ct);
             return Results.Ok(result ?? new ApiClient.PagedResult<FavoriteBearing>([], 0, 1, 20));
         })
@@ -68,7 +70,8 @@ public static class ProfileEndpoints
             CancellationToken ct) =>
         {
             var accessToken = GetAccessToken(http);
-            var path = $"/api/follows/merchants?page={query.Page}&pageSize={query.PageSize}";
+            // 改动说明：同上，补 /me 前缀对齐 API 实际路由 /api/me/follows/merchants。
+            var path = $"/api/me/follows/merchants?page={query.Page}&pageSize={query.PageSize}";
             var result = await api.GetPagedAsync<FollowedMerchant>(path, accessToken, ct);
             return Results.Ok(result ?? new ApiClient.PagedResult<FollowedMerchant>([], 0, 1, 20));
         })
