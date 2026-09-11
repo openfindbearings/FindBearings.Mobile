@@ -122,6 +122,8 @@ mobile.MapHomeEndpoints();
 mobile.MapGroup("/bearings").MapBearingEndpoints();
 mobile.MapGroup("/merchants").MapMerchantEndpoints();
 mobile.MapProfileEndpoints();
+// /mobile/me/*：收藏/关注/历史/资料编辑写操作代理（用户 token 透传）
+mobile.MapGroup("/me").MapMeEndpoints();
 // 认证组附加 IP 限流策略（防暴力破解登录/注册/刷新）
 var authGroup = mobile.MapGroup("/auth");
 authGroup.MapAuthEndpoints();

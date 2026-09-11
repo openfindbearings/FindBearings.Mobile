@@ -205,6 +205,9 @@ public class AuthClient
 
     /// <summary>
     /// 获取用户信息（供 profile 代理使用）。
+    /// 改动说明：Identity 统一返回 {success,code,data} 包装，原实现直接反序列化包装体
+    /// 导致所有字段恒 null（profile 空白 bug）；现先解包装再取 data，并补齐 nickname/email/pictureUrl
+    /// （Identity UserResponse 本就有，此前记录未定义被丢弃，前端昵称只能拿 userName 兜底）。
     /// </summary>
     public async Task<UserInfo?> GetUserInfoAsync(string accessToken, CancellationToken ct = default)
     {
@@ -214,12 +217,35 @@ public class AuthClient
             client.DefaultRequestHeaders.Authorization = new("Bearer", accessToken);
             var response = await client.GetAsync("/api/account/me", ct);
             if (!response.IsSuccessStatusCode) return null;
-            return await response.Content.ReadFromJsonAsync<UserInfo>(JsonOptions, ct);
+            var wrapper = await response.Content.ReadFromJsonAsync<IdentityResponse<UserInfo>>(JsonOptions, ct);
+            return wrapper?.Data;
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "获取用户信息失败");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// 更新 Identity 侧自助资料（昵称/头像）。个人信息编辑保存时与 API 业务资料双写，
+    /// 保证 Identity（登录账号信息）与业务库（展示信息）两侧一致。
+    /// </summary>
+    public async Task<bool> UpdateProfileAsync(string accessToken, string? nickname, string? pictureUrl, CancellationToken ct = default)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient("Identity");
+            client.DefaultRequestHeaders.Authorization = new("Bearer", accessToken);
+            // Identity UpdateProfileRequest 为部分更新语义：null 字段不动
+            var payload = new { nickname, pictureUrl };
+            var response = await client.PutAsJsonAsync("/api/account/me/profile", payload, ct);
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "更新 Identity 资料失败");
+            return false;
         }
     }
 
@@ -263,12 +289,22 @@ public class AuthClient
         string? Token_Type);
 
     /// <summary>
+    /// Identity ApiResponse 通用包装（{success,code,data}），供解包用户信息用。
+    /// </summary>
+    private sealed record IdentityResponse<T>(bool Success, T? Data);
+
+    /// <summary>
     /// 用户信息结构。
+    /// 改动说明：补 Nickname/Email/PictureUrl——Identity UserResponse 已有这些字段，
+    /// 此前记录未定义导致反序列化丢弃、前端昵称显示成用户名。
     /// </summary>
     public record UserInfo(
         string? Id,
         string? UserName,
         string? PhoneNumber,
+        string? Nickname,
+        string? Email,
+        string? PictureUrl,
         bool IsActive,
         string? CreatedAt,
         string? LastLoginAt);

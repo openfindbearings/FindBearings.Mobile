@@ -13,7 +13,9 @@ public static class ProfileEndpoints
     {
 
         /// <summary>
-        /// 获取用户资料（聚合 Identity + API）
+        /// 获取用户资料（聚合 Identity 基本信息 + API 业务资料）。
+        /// 改动说明：原实现只取 Identity 且因包装未解包恒空；现聚合 API /api/me/profile
+        /// 的 nickname/avatar/职业/公司/行业/商家绑定与收藏关注计数，供"我的/个人信息"页消费。
         /// </summary>
         group.MapGet("/profile", async (
             HttpContext http,
@@ -25,14 +27,25 @@ public static class ProfileEndpoints
             if (string.IsNullOrEmpty(accessToken))
                 return Results.Unauthorized();
 
-            // 从 Identity 获取用户基本信息
+            // Identity：登录账号信息（用户名/手机号/昵称）
             var userInfo = await authClient.GetUserInfoAsync(accessToken, ct);
+            // API 业务库：资料扩展字段与统计（未 JIT 建号时可能为 null）
+            var biz = await api.GetAsync<BizProfile>("/api/me/profile", accessToken, ct);
 
             return Results.Ok(new UserProfile
             {
-                Id = userInfo?.Id ?? "",
+                Id = userInfo?.Id ?? biz?.Id.ToString() ?? "",
                 UserName = userInfo?.UserName ?? "",
                 PhoneNumber = userInfo?.PhoneNumber ?? "",
+                Nickname = userInfo?.Nickname ?? biz?.Nickname,
+                Avatar = biz?.Avatar,
+                Occupation = biz?.Occupation,
+                CompanyName = biz?.CompanyName,
+                Industry = biz?.Industry,
+                MerchantId = biz?.MerchantId,
+                MerchantName = biz?.MerchantName,
+                FavoriteCount = biz?.FavoriteCount ?? 0,
+                FollowCount = biz?.FollowCount ?? 0,
                 IsActive = userInfo?.IsActive ?? true,
                 CreatedAt = userInfo?.CreatedAt ?? "",
                 LastLoginAt = userInfo?.LastLoginAt ?? "",
@@ -42,7 +55,10 @@ public static class ProfileEndpoints
         .WithSummary("获取用户资料");
 
         /// <summary>
-        /// 我的收藏轴承
+        /// 我的收藏轴承。
+        /// 改动说明：①补 401 门槛（原缺 token 静默回空页，登录态误判）；
+        /// ②DTO 改嵌套形状对齐 API FavoriteBearingDto {id,createdAt,bearing:{...}}
+        /// （原平铺定义反序列化必抛被吞→列表恒空）。
         /// </summary>
         group.MapGet("/favorites", async (
             HttpContext http,
@@ -51,8 +67,9 @@ public static class ProfileEndpoints
             CancellationToken ct) =>
         {
             var accessToken = GetAccessToken(http);
-            // 改动说明：API 实际路由为 /api/me/favorites/bearings（用户自有资源组 /api/me），
-            // 原 /api/favorites/bearings 不存在会恒 404→空数据，补 /me 前缀。
+            if (string.IsNullOrEmpty(accessToken))
+                return Results.Unauthorized();
+
             var path = $"/api/me/favorites/bearings?page={query.Page}&pageSize={query.PageSize}";
             var result = await api.GetPagedAsync<FavoriteBearing>(path, accessToken, ct);
             return Results.Ok(result ?? new ApiClient.PagedResult<FavoriteBearing>([], 0, 1, 20));
@@ -61,7 +78,7 @@ public static class ProfileEndpoints
         .WithSummary("我的收藏轴承");
 
         /// <summary>
-        /// 我的关注商家
+        /// 我的关注商家（401 门槛与嵌套 DTO 修复同上）
         /// </summary>
         group.MapGet("/followed", async (
             HttpContext http,
@@ -70,7 +87,9 @@ public static class ProfileEndpoints
             CancellationToken ct) =>
         {
             var accessToken = GetAccessToken(http);
-            // 改动说明：同上，补 /me 前缀对齐 API 实际路由 /api/me/follows/merchants。
+            if (string.IsNullOrEmpty(accessToken))
+                return Results.Unauthorized();
+
             var path = $"/api/me/follows/merchants?page={query.Page}&pageSize={query.PageSize}";
             var result = await api.GetPagedAsync<FollowedMerchant>(path, accessToken, ct);
             return Results.Ok(result ?? new ApiClient.PagedResult<FollowedMerchant>([], 0, 1, 20));
@@ -97,16 +116,48 @@ public static class ProfileEndpoints
 
     // ============ DTO ============
 
+    /// <summary>BFF 聚合后的用户资料（Identity 账号信息 + API 业务资料）</summary>
     public class UserProfile
     {
         public string Id { get; set; } = "";
         public string UserName { get; set; } = "";
         public string PhoneNumber { get; set; } = "";
+        public string? Nickname { get; set; }
+        public string? Avatar { get; set; }
+        public int? Occupation { get; set; }
+        public string? CompanyName { get; set; }
+        public string? Industry { get; set; }
+        public Guid? MerchantId { get; set; }
+        public string? MerchantName { get; set; }
+        public int FavoriteCount { get; set; }
+        public int FollowCount { get; set; }
         public bool IsActive { get; set; }
         public string CreatedAt { get; set; } = "";
         public string LastLoginAt { get; set; } = "";
     }
 
-    public record FavoriteBearing(Guid Id, string PartNumber, string BrandName, string? Image3DUrl);
-    public record FollowedMerchant(Guid Id, string Name, bool IsVerified);
+    /// <summary>API GET /api/me/profile 的 UserDto 中本代理需要的字段子集（大小写不敏感映射）。
+    /// Occupation 为枚举且 API 未配置 JsonStringEnumConverter，按数字序列化，故用 int?。</summary>
+    public record BizProfile(
+        Guid Id,
+        string? Nickname,
+        string? Avatar,
+        int? Occupation,
+        string? CompanyName,
+        string? Industry,
+        Guid? MerchantId,
+        string? MerchantName,
+        int FavoriteCount,
+        int FollowCount);
+
+    /// <summary>轴承摘要（收藏列表内嵌）</summary>
+    public record BearingBrief(Guid Id, string PartNumber, string? BrandName, string? BearingType);
+
+    /// <summary>商家摘要（关注列表内嵌）</summary>
+    public record MerchantBrief(Guid Id, string Name, string? CompanyName, bool IsVerified);
+
+    // 改动说明：收藏/关注项改为与 API FavoriteBearingDto/FollowedMerchantDto 一致的嵌套形状
+    // {id, createdAt, bearing|merchant:{...}}，原平铺定义与响应不匹配导致列表恒空。
+    public record FavoriteBearing(Guid Id, DateTime CreatedAt, BearingBrief Bearing);
+    public record FollowedMerchant(Guid Id, DateTime CreatedAt, MerchantBrief Merchant);
 }
