@@ -94,8 +94,8 @@ public static class MeEndpoints
         // ============ 浏览历史 ============
 
         /// <summary>轴承浏览历史（分页）</summary>
-        group.MapGet("/history/bearings", async (
-            HttpContext http, ApiClient api, ProfileEndpoints.PageQuery query, CancellationToken ct) =>
+    group.MapGet("/history/bearings", async (
+        HttpContext http, ApiClient api, [AsParameters] ProfileEndpoints.PageQuery query, CancellationToken ct) =>
         {
             var token = GetToken(http);
             if (string.IsNullOrEmpty(token)) return Results.Unauthorized();
@@ -107,8 +107,8 @@ public static class MeEndpoints
         .WithSummary("轴承浏览历史");
 
         /// <summary>商家浏览历史（分页）</summary>
-        group.MapGet("/history/merchants", async (
-            HttpContext http, ApiClient api, ProfileEndpoints.PageQuery query, CancellationToken ct) =>
+    group.MapGet("/history/merchants", async (
+        HttpContext http, ApiClient api, [AsParameters] ProfileEndpoints.PageQuery query, CancellationToken ct) =>
         {
             var token = GetToken(http);
             if (string.IsNullOrEmpty(token)) return Results.Unauthorized();
