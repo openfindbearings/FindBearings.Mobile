@@ -1,3 +1,5 @@
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 
@@ -152,7 +154,75 @@ public class ApiClient
     }
 
     /// <summary>
-    /// POST 无响应数据写操作（收藏/关注/记录浏览等，路径参数即语义），返回是否成功。
+    /// 拉取原始响应（媒体代理用：API 无公网 ingress，图片流经 BFF 转发）。
+    /// 失败或非 2xx 返回 null。
+    /// </summary>
+    public async Task<HttpResponseMessage?> GetRawAsync(string path, CancellationToken ct = default)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient("Api");
+            var response = await client.GetAsync(path, HttpCompletionOption.ResponseHeadersRead, ct);
+            return response.IsSuccessStatusCode ? response : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "API GET(raw) {Path} 失败", path);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 上传文件（multipart/form-data 转发到 API，带用户 JWT）。
+    /// 改动说明：头像上传需要透传 IFormFile，普通 JSON 方法不适用；
+    /// 返回 API 的 data（{url} 相对路径），由调用方拼公网主机名。
+    /// </summary>
+    public async Task<T?> UploadAsync<T>(string path, Stream fileStream, string fileName, string contentType, string accessToken, CancellationToken ct = default) where T : class
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient("Api");
+            client.DefaultRequestHeaders.Authorization = new("Bearer", accessToken);
+            using var content = new MultipartFormDataContent();
+            var streamContent = new StreamContent(fileStream);
+            streamContent.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+            content.Add(streamContent, "file", fileName);
+            var response = await client.PostAsync(path, content, ct);
+            response.EnsureSuccessStatusCode();
+            var wrapper = await response.Content.ReadFromJsonAsync<ApiResponseWrapper<T>>(JsonOptions, ct);
+            return wrapper?.Data;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "API UPLOAD {Path} 失败", path);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// PUT 请求（响应 data 恒为 null 的更新操作，以 HTTP 状态码判定成败）。
+    /// 改动说明：API 的 ApiResponseHelper.Ok(message) 重载 data=null，
+    /// 用 PutAsync&lt;string&gt; 会把"成功但无数据"误判为失败，故补 void 版。
+    /// </summary>
+    public async Task<bool> PutVoidAsync(string path, object body, string? accessToken, CancellationToken ct = default)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient("Api");
+            if (!string.IsNullOrEmpty(accessToken))
+                client.DefaultRequestHeaders.Authorization = new("Bearer", accessToken);
+            var response = await client.PutAsJsonAsync(path, body, ct);
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "API PUT {Path} 失败", path);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// POST 请求（无返回体，仅判成功与否，如收藏/关注/浏览上报）
     /// </summary>
     public async Task<bool> PostVoidAsync(string path, string? accessToken, CancellationToken ct = default)
     {

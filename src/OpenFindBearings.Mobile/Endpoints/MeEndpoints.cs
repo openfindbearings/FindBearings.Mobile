@@ -193,28 +193,58 @@ public static class MeEndpoints
             var token = GetToken(http);
             if (string.IsNullOrEmpty(token)) return Results.Unauthorized();
 
+            // 改动说明：空串归一为 null——Identity 的 PictureUrl 带 [Url] 校验，
+            // 前端未设置头像时传 "" 会被判"URL格式不正确"整请求 400（昵称保存失败根因之一）
+            var nickname = string.IsNullOrWhiteSpace(body.Nickname) ? null : body.Nickname.Trim();
+            var avatar = string.IsNullOrWhiteSpace(body.Avatar) ? null : body.Avatar.Trim();
+
             // Identity 侧仅在带 nickname/avatar 时同步（部分更新语义，null 不动）
-            if (body.Nickname != null || body.Avatar != null)
+            if (nickname != null || avatar != null)
             {
-                await authClient.UpdateProfileAsync(token, body.Nickname, body.Avatar, ct);
+                await authClient.UpdateProfileAsync(token, nickname, avatar, ct);
             }
 
             var bizBody = new
             {
-                nickname = body.Nickname,
-                avatar = body.Avatar,
+                nickname,
+                avatar,
                 occupation = body.Occupation,
                 companyName = body.CompanyName,
                 industry = body.Industry
             };
-            var result = await api.PutAsync<string>("/api/me/profile", bizBody, token, ct);
-            // ApiClient 失败返回 null（内部已记日志），据此判定保存结果
-            return result != null
+            // 改动说明：API 更新成功时 data=null（Ok(message) 重载），原 PutAsync<string>
+            // 判 null 误报失败；改 PutVoidAsync 以 HTTP 状态码判定
+            var ok = await api.PutVoidAsync("/api/me/profile", bizBody, token, ct);
+            return ok
                 ? Results.Ok(new { success = true, message = "保存成功" })
                 : Results.Ok(new { success = false, message = "保存失败" });
         })
         .WithName("UpdateProfile")
         .WithSummary("更新个人信息");
+
+        /// <summary>
+        /// 上传头像：透传 multipart 到 API /api/me/avatar 落盘，
+        /// 返回可公网访问的绝对 URL（经 BFF 媒体代理 /mobile/media/ 前缀，
+        /// API 无公网 ingress，图片必须走 BFF 转发；主机名从 X-Forwarded 头推导）。
+        /// </summary>
+        group.MapPost("/avatar", async (
+            IFormFile file, HttpContext http, ApiClient api, CancellationToken ct) =>
+        {
+            var token = GetToken(http);
+            if (string.IsNullOrEmpty(token)) return Results.Unauthorized();
+            if (file == null || file.Length == 0)
+                return Results.Ok(new { success = false, message = "请选择图片" });
+
+            using var stream = file.OpenReadStream();
+            var data = await api.UploadAsync<AvatarUrlResult>(
+                "/api/me/avatar", stream, file.FileName, file.ContentType ?? "image/jpeg", token, ct);
+            if (data?.Url == null)
+                return Results.Ok(new { success = false, message = "上传失败" });
+
+            return Results.Ok(new { success = true, url = PublicUrl(http, data.Url) });
+        })
+        .WithName("UploadAvatar")
+        .WithSummary("上传头像");
     }
 
     // ============ 工具 ============
@@ -222,6 +252,23 @@ public static class MeEndpoints
     /// <summary>从入站请求提取用户 access token（与 ProfileEndpoints.GetAccessToken 同逻辑）</summary>
     private static string? GetToken(HttpContext http) =>
         http.Request.Headers.Authorization.FirstOrDefault()?.Replace("Bearer ", "");
+
+    /// <summary>
+    /// 把 API 相对路径拼成 BFF 公网绝对 URL。
+    /// 改动说明：Ingress 终结 TLS 后转发到容器是 http + 集群内 Host，
+    /// 必须优先取 traefik 注入的 X-Forwarded-Proto/Host 才能得到 https://bff.515813.xyz。
+    /// </summary>
+    internal static string PublicUrl(HttpContext http, string relativePath)
+    {
+        var proto = http.Request.Headers["X-Forwarded-Proto"].FirstOrDefault() ?? http.Request.Scheme;
+        var host = http.Request.Headers["X-Forwarded-Host"].FirstOrDefault()
+                   ?? http.Request.Host.Host
+                   + (http.Request.Host.Port.HasValue ? $":{http.Request.Host.Port}" : "");
+        return $"{proto}://{host}{relativePath}";
+    }
+
+    /// <summary>API 头像上传响应 {url}</summary>
+    public record AvatarUrlResult(string? Url);
 
     // ============ DTO ============
 
